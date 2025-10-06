@@ -26,13 +26,17 @@ with DAG(
 ) as dag:
 
     @task
-    def fetch_stock_data(symbol="MSFT", period="1y"):
+    def fetch_stock_data(symbol="MSFT"):
         """
-        Fetch stock data using yfinance.
-        period can be '1y', '6mo', '3mo', etc.
+        Fetch stock data for the previous calendar year using yfinance.
         """
-        df = yf.download(symbol, period=period)
-        df = df.reset_index()  # 'Date' becomes a column
+        from datetime import date
+        today = date.today()
+        start = date(today.year - 1, 1, 1)
+        end = date(today.year - 1, 12, 31)
+        
+        df = yf.download(symbol, start=start, end=end)
+        df = df.reset_index()
         df.rename(columns={
             "Date": "date",
             "Open": "open",
@@ -41,9 +45,9 @@ with DAG(
             "Close": "close",
             "Volume": "volume"
         }, inplace=True)
-        # Convert Timestamp to string for Snowflake
         df["date"] = df["date"].dt.strftime("%Y-%m-%d")
         return df.to_dict(orient="records")
+
 
     @task
     def transform_data(data: list):
