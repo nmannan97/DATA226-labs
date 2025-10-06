@@ -1,0 +1,6 @@
+#Start the venv
+source airflow_venv311/bin/activate
+
+airflow users list
+
+cp ~/airflow/DATA226-labs/lab_1/dags/*.py ~/airflow/dags/
