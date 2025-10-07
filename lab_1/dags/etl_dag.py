@@ -31,26 +31,46 @@ with DAG(
 
     @task
     def fetch_stock_data(symbol="MSFT", period="1y"):
+        import yfinance as yf
+        import pandas as pd
+
         df = yf.download(symbol, period=period)
         df = df.reset_index()
-        df.columns = ['_'.join(filter(None, map(str, col))) if isinstance(col, tuple) else col for col in df.columns]
 
-        rename_map = {
-            "Date_": "trade_date",   # <-- rename here
-            f"Open_{symbol}": "open",
-            f"High_{symbol}": "high",
-            f"Low_{symbol}": "low",
-            f"Close_{symbol}": "close",
-            f"Adj Close_{symbol}": "adj_close",
-            f"Volume_{symbol}": "volume"
-        }
-        df.rename(columns=rename_map, inplace=True)
+        # ✅ Flatten multi-index column names
+        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+        print(f"✅ Columns after flattening: {df.columns.tolist()}")
 
-        df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.strftime("%Y-%m-%d")
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        # ✅ Rename columns to match Snowflake table
+        df.rename(
+            columns={
+                "Date": "DATE",
+                "Open": "OPEN",
+                "High": "HIGH",
+                "Low": "LOW",
+                "Close": "CLOSE",
+                "Adj Close": "ADJ_CLOSE",
+                "Volume": "VOLUME"
+            },
+            inplace=True
+        )
+
+        print(f"✅ Columns after rename: {df.columns.tolist()}")
+
+        # ✅ Ensure DATE column is clean
+        df["DATE"] = pd.to_datetime(df["DATE"]).dt.strftime("%Y-%m-%d")
+
+        # ✅ Convert numeric columns safely
+        numeric_cols = ["OPEN", "HIGH", "LOW", "CLOSE", "ADJ_CLOSE", "VOLUME"]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            else:
+                print(f"⚠️ Missing column: {col}")
+
+        print(f"✅ Sample rows:\n{df.head()}")
+
         return df.to_dict(orient="records")
-
 
     @task
     def transform_data(data: list):
@@ -70,15 +90,45 @@ with DAG(
         """
         Load transformed stock data into Snowflake.
         """
-        hook = SnowflakeHook(snowflake_conn_id="snowflake_conn")
+        import pandas as pd
+        from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+        from snowflake.connector.pandas_tools import write_pandas
+
+        # Create DataFrame from list of dicts
         df = pd.DataFrame(data)
+
+        # ✅ Rename the date column to match Snowflake table
+        if "trade_date" in df.columns:
+            df.rename(columns={"trade_date": "DATE"}, inplace=True)
+
+        # ✅ Make sure all columns are uppercase (Snowflake default)
+        df.columns = [col.upper() for col in df.columns]
+
+        hook = SnowflakeHook(snowflake_conn_id="snowflake_conn")
+
         with hook.get_conn() as conn:
             cur = conn.cursor()
             cur.execute(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}")
             cur.execute(f"USE DATABASE {SNOWFLAKE_DB}")
             cur.execute(f"USE SCHEMA {SNOWFLAKE_SCHEMA}")
-            cur.execute(f"TRUNCATE TABLE IF EXISTS {SNOWFLAKE_TABLE}")
-            write_pandas(conn, df, table_name=SNOWFLAKE_TABLE, schema=SNOWFLAKE_SCHEMA, database=SNOWFLAKE_DB)
+            
+            # ✅ Use valid truncate syntax
+            cur.execute(f"TRUNCATE TABLE {SNOWFLAKE_TABLE}")
+
+            # ✅ Upload using Snowflake's optimized write_pandas
+            success, nchunks, nrows, _ = write_pandas(
+                conn,
+                df,
+                table_name=SNOWFLAKE_TABLE,
+                schema=SNOWFLAKE_SCHEMA,
+                database=SNOWFLAKE_DB
+            )
+
+            print(f"✅ Uploaded {nrows} rows in {nchunks} chunks (Success={success})")
+
+        return f"Loaded {len(df)} rows into Snowflake table {SNOWFLAKE_TABLE}."
+
+
 
     # DAG task dependencies
     raw_data = fetch_stock_data()

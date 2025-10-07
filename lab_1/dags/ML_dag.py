@@ -78,15 +78,31 @@ with DAG(
         return df.to_dict(orient="records")
 
     @task
-    def train_forecast(data):
+    def train_forecast(data: list):
         df = pd.DataFrame(data)
+
+        # 🔧 Ensure all column names are strings before making them lowercase
+        df.columns = [str(c).lower() for c in df.columns]
+        print(f"📊 Columns in df: {df.columns.tolist()}")
+
+        # ✅ Prepare Prophet dataframe
+        if "date" not in df.columns or "close" not in df.columns:
+            raise ValueError(f"❌ Missing required columns. Found: {df.columns.tolist()}")
+
         df_prophet = df[["date", "close"]].rename(columns={"date": "ds", "close": "y"})
+
+        # ✅ Train model
         model = Prophet()
         model.fit(df_prophet)
+
+        # ✅ Forecast future prices
         future = model.make_future_dataframe(periods=30)
         forecast = model.predict(future)
+
+        # ✅ Prepare forecast results
         forecast_df = forecast[["ds", "yhat"]].rename(columns={"ds": "date", "yhat": "forecast_close"})
         forecast_df["model_used"] = "Prophet"
+
         return forecast_df.to_dict(orient="records")
 
     @task
